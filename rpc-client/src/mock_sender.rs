@@ -306,7 +306,10 @@ impl RpcSender for MockSender {
                     units_consumed: None,
                     return_data: None,
                     inner_instructions: None,
-                    replacement_blockhash: None
+                    replacement_blockhash: None,
+                    loaded_addresses: None,
+                    post_balances: None,
+                    post_token_balances: None,
                 },
             })?,
             "getMinimumBalanceForRentExemption" => json![20],

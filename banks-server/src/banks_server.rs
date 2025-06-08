@@ -195,14 +195,17 @@ fn simulate_transaction(
         }
         Ok(tx) => tx,
     };
-    let TransactionSimulationResult {
-        result,
-        logs,
-        post_simulation_accounts: _,
-        units_consumed,
-        return_data,
-        inner_instructions,
-    } = bank.simulate_transaction_unchecked(&sanitized_transaction, true);
+    let (
+        TransactionSimulationResult {
+            result,
+            logs,
+            post_simulation_accounts: _,
+            units_consumed,
+            return_data,
+            inner_instructions,
+        },
+        _,
+    ) = bank.simulate_transaction_unchecked(&sanitized_transaction, true);
 
     let simulation_details = TransactionSimulationDetails {
         logs,
