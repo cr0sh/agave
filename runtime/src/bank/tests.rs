@@ -13506,7 +13506,7 @@ fn test_failed_simulation_compute_units() {
 
     bank.freeze();
     let sanitized = RuntimeTransaction::from_transaction_for_tests(transaction);
-    let simulation = bank.simulate_transaction(&sanitized, false);
+    let (simulation, _) = bank.simulate_transaction(&sanitized, false);
     assert_eq!(expected_consumed_units, simulation.units_consumed);
 }
 
@@ -13529,7 +13529,7 @@ fn test_failed_simulation_load_error() {
 
     bank.freeze();
     let sanitized = RuntimeTransaction::from_transaction_for_tests(transaction);
-    let simulation = bank.simulate_transaction(&sanitized, false);
+    let (simulation, _) = bank.simulate_transaction(&sanitized, false);
     assert_eq!(
         simulation,
         TransactionSimulationResult {

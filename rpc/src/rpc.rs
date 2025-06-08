@@ -3485,6 +3485,7 @@ pub mod rpc_accounts_scan {
 pub mod rpc_full {
     use {
         super::*,
+        solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
         solana_sdk::message::{SanitizedVersionedMessage, VersionedMessage},
         solana_transaction_status::parse_ui_inner_instructions,
     };
@@ -3910,14 +3911,17 @@ pub mod rpc_full {
                     }
                 }
 
-                if let TransactionSimulationResult {
-                    result: Err(err),
-                    logs,
-                    post_simulation_accounts: _,
-                    units_consumed,
-                    return_data,
-                    inner_instructions: _, // Always `None` due to `enable_cpi_recording = false`
-                } = preflight_bank.simulate_transaction(&transaction, false)
+                if let (
+                    TransactionSimulationResult {
+                        result: Err(err),
+                        logs,
+                        post_simulation_accounts: _,
+                        units_consumed,
+                        return_data,
+                        inner_instructions: _, // Always `None` due to `enable_cpi_recording = false`
+                    },
+                    _,
+                ) = preflight_bank.simulate_transaction(&transaction, false)
                 {
                     match err {
                         TransactionError::BlockhashNotFound => {
@@ -3937,6 +3941,9 @@ pub mod rpc_full {
                             return_data: return_data.map(|return_data| return_data.into()),
                             inner_instructions: None,
                             replacement_blockhash: None,
+                            loaded_addresses: None,
+                            post_balances: None,
+                            post_token_balances: None,
                         },
                     }
                     .into());
@@ -4008,14 +4015,34 @@ pub mod rpc_full {
                 verify_transaction(&transaction, &bank.feature_set)?;
             }
 
-            let TransactionSimulationResult {
-                result,
-                logs,
-                post_simulation_accounts,
-                units_consumed,
-                return_data,
-                inner_instructions,
-            } = bank.simulate_transaction(&transaction, enable_cpi_recording);
+            let (
+                TransactionSimulationResult {
+                    result,
+                    logs,
+                    post_simulation_accounts,
+                    units_consumed,
+                    return_data,
+                    inner_instructions,
+                },
+                batch,
+            ) = bank.simulate_transaction(&transaction, enable_cpi_recording);
+
+            let post_balances = bank
+                .collect_balances(&batch)
+                .drain(..)
+                .next()
+                .unwrap_or_default();
+            let post_token_balances = solana_ledger::token_balances::collect_token_balances(
+                bank,
+                &batch,
+                &mut Default::default(),
+            )
+            .drain(..)
+            .next()
+            .unwrap_or_default();
+            let loaded_addresses = transaction
+                .as_sanitized_transaction()
+                .get_loaded_addresses();
 
             let account_keys = transaction.message().account_keys();
             let number_of_accounts = account_keys.len();
@@ -4082,6 +4109,11 @@ pub mod rpc_full {
                     return_data: return_data.map(|return_data| return_data.into()),
                     inner_instructions,
                     replacement_blockhash: blockhash,
+                    loaded_addresses: Some(loaded_addresses),
+                    post_balances: Some(post_balances),
+                    post_token_balances: Some(
+                        post_token_balances.into_iter().map(Into::into).collect(),
+                    ),
                 },
             ))
         }
