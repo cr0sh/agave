@@ -3198,11 +3198,11 @@ impl Bank {
     }
 
     /// Run transactions against a frozen bank without committing the results
-    pub fn simulate_transaction<'a, Tx: TransactionWithMeta>(
-        &'a self,
-        transaction: &'a Tx,
+    pub fn simulate_transaction(
+        &self,
+        transaction: &impl TransactionWithMeta,
         enable_cpi_recording: bool,
-    ) -> (TransactionSimulationResult, TransactionBatch<'a, 'a, Tx>) {
+    ) -> TransactionSimulationResult {
         assert!(self.is_frozen(), "simulation bank must be frozen");
 
         self.simulate_transaction_unchecked(transaction, enable_cpi_recording)
@@ -3210,11 +3210,34 @@ impl Bank {
 
     /// Run transactions against a bank without committing the results; does not check if the bank
     /// is frozen, enabling use in single-Bank test frameworks
-    pub fn simulate_transaction_unchecked<'a, Tx: TransactionWithMeta>(
-        &'a self,
-        transaction: &'a Tx,
+    pub fn simulate_transaction_unchecked(
+        &self,
+        transaction: &impl TransactionWithMeta,
         enable_cpi_recording: bool,
-    ) -> (TransactionSimulationResult, TransactionBatch<'a, 'a, Tx>) {
+    ) -> TransactionSimulationResult {
+        self.simulate_transaction_unchecked_2(transaction, enable_cpi_recording, false)
+    }
+
+    /// Run transactions against a frozen bank without committing the results
+    pub fn simulate_transaction_2(
+        &self,
+        transaction: &impl TransactionWithMeta,
+        enable_cpi_recording: bool,
+        disable_logging: bool,
+    ) -> TransactionSimulationResult {
+        assert!(self.is_frozen(), "simulation bank must be frozen");
+
+        self.simulate_transaction_unchecked_2(transaction, enable_cpi_recording, disable_logging)
+    }
+
+    /// Run transactions against a bank without committing the results; does not check if the bank
+    /// is frozen, enabling use in single-Bank test frameworks
+    pub fn simulate_transaction_unchecked_2(
+        &self,
+        transaction: &impl TransactionWithMeta,
+        enable_cpi_recording: bool,
+        disable_logging: bool,
+    ) -> TransactionSimulationResult {
         let account_keys = transaction.account_keys();
         let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
@@ -3240,7 +3263,7 @@ impl Bank {
                 limit_to_load_programs: true,
                 recording_config: ExecutionRecordingConfig {
                     enable_cpi_recording,
-                    enable_log_recording: true,
+                    enable_log_recording: !disable_logging,
                     enable_return_data_recording: true,
                 },
                 transaction_account_lock_limit: Some(self.get_transaction_account_lock_limit()),
@@ -3291,17 +3314,14 @@ impl Bank {
             };
         let logs = logs.unwrap_or_default();
 
-        (
-            TransactionSimulationResult {
-                result,
-                logs,
-                post_simulation_accounts,
-                units_consumed,
-                return_data,
-                inner_instructions,
-            },
-            batch,
-        )
+        TransactionSimulationResult {
+            result,
+            logs,
+            post_simulation_accounts,
+            units_consumed,
+            return_data,
+            inner_instructions,
+        }
     }
 
     fn get_account_overrides_for_simulation(&self, account_keys: &AccountKeys) -> AccountOverrides {

@@ -3487,7 +3487,6 @@ pub mod rpc_full {
         super::*,
         solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
         solana_sdk::message::{SanitizedVersionedMessage, VersionedMessage},
-        solana_transaction_status::parse_ui_inner_instructions,
     };
     #[rpc]
     pub trait Full {
@@ -3911,17 +3910,14 @@ pub mod rpc_full {
                     }
                 }
 
-                if let (
-                    TransactionSimulationResult {
-                        result: Err(err),
-                        logs,
-                        post_simulation_accounts: _,
-                        units_consumed,
-                        return_data,
-                        inner_instructions: _, // Always `None` due to `enable_cpi_recording = false`
-                    },
-                    _,
-                ) = preflight_bank.simulate_transaction(&transaction, false)
+                if let TransactionSimulationResult {
+                    result: Err(err),
+                    logs,
+                    post_simulation_accounts: _,
+                    units_consumed,
+                    return_data,
+                    inner_instructions: _, // Always `None` due to `enable_cpi_recording = false`
+                } = preflight_bank.simulate_transaction(&transaction, false)
                 {
                     match err {
                         TransactionError::BlockhashNotFound => {
@@ -3975,6 +3971,7 @@ pub mod rpc_full {
                 accounts: config_accounts,
                 min_context_slot,
                 inner_instructions: enable_cpi_recording,
+                disable_logging,
             } = config.unwrap_or_default();
             let tx_encoding = encoding.unwrap_or(UiTransactionEncoding::Base58);
             let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
@@ -4015,31 +4012,23 @@ pub mod rpc_full {
                 verify_transaction(&transaction, &bank.feature_set)?;
             }
 
-            let (
-                TransactionSimulationResult {
-                    result,
-                    logs,
-                    post_simulation_accounts,
-                    units_consumed,
-                    return_data,
-                    inner_instructions,
-                },
-                batch,
-            ) = bank.simulate_transaction(&transaction, enable_cpi_recording);
+            let TransactionSimulationResult {
+                result,
+                logs,
+                post_simulation_accounts,
+                units_consumed,
+                return_data,
+                inner_instructions,
+            } = bank.simulate_transaction_2(&transaction, enable_cpi_recording, disable_logging);
 
-            let post_balances = bank
-                .collect_balances(&batch)
-                .drain(..)
-                .next()
-                .unwrap_or_default();
-            let post_token_balances = solana_ledger::token_balances::collect_token_balances(
-                bank,
-                &batch,
-                &mut Default::default(),
-            )
-            .drain(..)
-            .next()
-            .unwrap_or_default();
+            let post_balances = post_simulation_accounts
+                .iter()
+                .map(|(_id, data)| data.lamports())
+                .collect();
+
+            let post_token_balances =
+                token_balances::collect_token_balances(bank, &post_simulation_accounts);
+
             let loaded_addresses = transaction
                 .as_sanitized_transaction()
                 .get_loaded_addresses();
@@ -4093,11 +4082,8 @@ pub mod rpc_full {
                 None
             };
 
-            let inner_instructions = inner_instructions.map(|info| {
-                map_inner_instructions(info)
-                    .map(|converted| parse_ui_inner_instructions(converted, &account_keys))
-                    .collect()
-            });
+            let inner_instructions = inner_instructions
+                .map(|info| map_inner_instructions(info).map(Into::into).collect());
 
             Ok(new_response(
                 bank,
@@ -9187,5 +9173,123 @@ pub mod tests {
                 },
             ],
         );
+    }
+}
+
+mod token_balances {
+    use {
+        solana_account_decoder::{
+            parse_account_data::SplTokenAdditionalDataV2,
+            parse_token::{is_known_spl_token_id, token_amount_to_ui_amount_v3, UiTokenAmount},
+        },
+        solana_runtime::bank::Bank,
+        solana_sdk::{
+            account::{AccountSharedData, ReadableAccount},
+            pubkey::Pubkey,
+        },
+        solana_transaction_status::TransactionTokenBalance,
+        spl_token_2022::{
+            extension::StateWithExtensions,
+            state::{Account as TokenAccount, Mint},
+        },
+        std::collections::HashMap,
+    };
+
+    fn get_mint_decimals(bank: &Bank, mint: &Pubkey) -> Option<u8> {
+        if mint == &spl_token::native_mint::id() {
+            Some(spl_token::native_mint::DECIMALS)
+        } else {
+            let mint_account = bank.get_account(mint)?;
+
+            if !is_known_spl_token_id(mint_account.owner()) {
+                return None;
+            }
+
+            let decimals = StateWithExtensions::<Mint>::unpack(mint_account.data())
+                .map(|mint| mint.base.decimals)
+                .ok()?;
+
+            Some(decimals)
+        }
+    }
+
+    pub fn collect_token_balances(
+        bank: &Bank,
+        post_accounts: &[(Pubkey, AccountSharedData)],
+    ) -> Vec<TransactionTokenBalance> {
+        let mut mint_decimals = HashMap::<Pubkey, u8>::new();
+
+        let has_token_program = post_accounts
+            .iter()
+            .map(|x| &x.0)
+            .any(is_known_spl_token_id);
+
+        let mut transaction_balances: Vec<TransactionTokenBalance> = vec![];
+        if has_token_program {
+            for (index, (account_id, account_data)) in post_accounts.iter().enumerate() {
+                if is_known_spl_token_id(account_id) {
+                    continue;
+                }
+
+                if let Some(TokenBalanceData {
+                    mint,
+                    ui_token_amount,
+                    owner,
+                    program_id,
+                }) = collect_token_balance_from_account(bank, account_data, &mut mint_decimals)
+                {
+                    transaction_balances.push(TransactionTokenBalance {
+                        account_index: index as u8,
+                        mint,
+                        ui_token_amount,
+                        owner,
+                        program_id,
+                    });
+                }
+            }
+        }
+        transaction_balances
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct TokenBalanceData {
+        mint: String,
+        owner: String,
+        ui_token_amount: UiTokenAmount,
+        program_id: String,
+    }
+
+    fn collect_token_balance_from_account(
+        bank: &Bank,
+        account_data: &AccountSharedData,
+        mint_decimals: &mut HashMap<Pubkey, u8>,
+    ) -> Option<TokenBalanceData> {
+        let account = account_data;
+
+        if !is_known_spl_token_id(account.owner()) {
+            return None;
+        }
+
+        let token_account = StateWithExtensions::<TokenAccount>::unpack(account.data()).ok()?;
+        let mint = token_account.base.mint;
+
+        let decimals = mint_decimals.get(&mint).cloned().or_else(|| {
+            let decimals = get_mint_decimals(bank, &mint)?;
+            mint_decimals.insert(mint, decimals);
+            Some(decimals)
+        })?;
+
+        Some(TokenBalanceData {
+            mint: token_account.base.mint.to_string(),
+            owner: token_account.base.owner.to_string(),
+            ui_token_amount: token_amount_to_ui_amount_v3(
+                token_account.base.amount,
+                // NOTE: Same as parsed instruction data, ledger data always uses
+                // the raw token amount, and does not calculate the UI amount with
+                // any consideration for interest.
+                &SplTokenAdditionalDataV2::with_decimals(decimals),
+            ),
+            program_id: account.owner().to_string(),
+        })
     }
 }
