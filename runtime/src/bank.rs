@@ -341,6 +341,7 @@ pub struct TransactionSimulationResult {
     pub units_consumed: u64,
     pub return_data: Option<TransactionReturnData>,
     pub inner_instructions: Option<Vec<InnerInstructions>>,
+    pub fee: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -3215,40 +3216,40 @@ impl Bank {
         transaction: &impl TransactionWithMeta,
         enable_cpi_recording: bool,
     ) -> TransactionSimulationResult {
-        self.simulate_transaction_unchecked_2(transaction, enable_cpi_recording, false)
+        let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
+        self.simulate_batch_unchecked(transaction, &batch, enable_cpi_recording, false)
     }
 
-    /// Run transactions against a frozen bank without committing the results
-    pub fn simulate_transaction_2(
+    /// Run a transaction against a frozen bank without committing the results
+    pub fn simulate_single_tx_batch(
         &self,
         transaction: &impl TransactionWithMeta,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
         enable_cpi_recording: bool,
         disable_logging: bool,
     ) -> TransactionSimulationResult {
         assert!(self.is_frozen(), "simulation bank must be frozen");
 
-        self.simulate_transaction_unchecked_2(transaction, enable_cpi_recording, disable_logging)
+        self.simulate_batch_unchecked(transaction, batch, enable_cpi_recording, disable_logging)
     }
 
-    /// Run transactions against a bank without committing the results; does not check if the bank
-    /// is frozen, enabling use in single-Bank test frameworks
-    pub fn simulate_transaction_unchecked_2(
+    pub fn simulate_batch_unchecked(
         &self,
         transaction: &impl TransactionWithMeta,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
         enable_cpi_recording: bool,
         disable_logging: bool,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.account_keys();
         let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
-        let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
             mut processing_results,
             ..
         } = self.load_and_execute_transactions(
-            &batch,
+            batch,
             // After simulation, transactions will need to be forwarded to the leader
             // for processing. During forwarding, the transaction could expire if the
             // delay is not accounted for.
@@ -3287,11 +3288,12 @@ impl Bank {
         let processing_result = processing_results
             .pop()
             .unwrap_or(Err(TransactionError::InvalidProgramForExecution));
-        let (post_simulation_accounts, result, logs, return_data, inner_instructions) =
+        let (post_simulation_accounts, result, logs, return_data, inner_instructions, fee_details) =
             match processing_result {
                 Ok(processed_tx) => match processed_tx {
                     ProcessedTransaction::Executed(executed_tx) => {
                         let details = executed_tx.execution_details;
+                        let fee_details = executed_tx.loaded_transaction.fee_details;
                         let post_simulation_accounts = executed_tx
                             .loaded_transaction
                             .accounts
@@ -3304,13 +3306,19 @@ impl Bank {
                             details.log_messages,
                             details.return_data,
                             details.inner_instructions,
+                            Some(fee_details),
                         )
                     }
-                    ProcessedTransaction::FeesOnly(fees_only_tx) => {
-                        (vec![], Err(fees_only_tx.load_error), None, None, None)
-                    }
+                    ProcessedTransaction::FeesOnly(fees_only_tx) => (
+                        vec![],
+                        Err(fees_only_tx.load_error),
+                        None,
+                        None,
+                        None,
+                        Some(fees_only_tx.fee_details),
+                    ),
                 },
-                Err(error) => (vec![], Err(error), None, None, None),
+                Err(error) => (vec![], Err(error), None, None, None, None),
             };
         let logs = logs.unwrap_or_default();
 
@@ -3321,6 +3329,7 @@ impl Bank {
             units_consumed,
             return_data,
             inner_instructions,
+            fee: fee_details.map(|fee_details| fee_details.total_fee()),
         }
     }
 
