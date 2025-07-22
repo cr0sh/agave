@@ -44,6 +44,8 @@ pub struct RpcSimulateTransactionConfig {
     pub min_context_slot: Option<Slot>,
     #[serde(default)]
     pub inner_instructions: bool,
+    #[serde(default)]
+    pub disable_logging: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

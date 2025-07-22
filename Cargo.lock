@@ -9969,6 +9969,7 @@ dependencies = [
  "solana-commitment-config",
  "solana-fee-calculator",
  "solana-inflation",
+ "solana-message",
  "solana-pubkey",
  "solana-transaction-error",
  "solana-transaction-status-client-types",

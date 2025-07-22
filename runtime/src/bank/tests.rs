@@ -13194,6 +13194,7 @@ fn test_failed_simulation_load_error() {
             loaded_accounts_data_size: 0,
             return_data: None,
             inner_instructions: None,
+            fee: None,
         }
     );
 }

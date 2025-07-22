@@ -329,7 +329,7 @@ pub struct LoadAndExecuteTransactionsOutput {
     pub balance_collector: Option<BalanceCollector>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct TransactionSimulationResult {
     pub result: Result<()>,
     pub logs: TransactionLogMessages,
@@ -338,6 +338,8 @@ pub struct TransactionSimulationResult {
     pub loaded_accounts_data_size: u32,
     pub return_data: Option<TransactionReturnData>,
     pub inner_instructions: Option<Vec<InnerInstructions>>,
+    pub fee: Option<u64>,
+    pub balance_collector: Option<BalanceCollector>,
 }
 
 #[derive(Clone, Debug)]
@@ -3295,17 +3297,41 @@ impl Bank {
         transaction: &impl TransactionWithMeta,
         enable_cpi_recording: bool,
     ) -> TransactionSimulationResult {
+        let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
+        self.simulate_batch_unchecked(transaction, &batch, enable_cpi_recording, false)
+    }
+
+    /// Run a transaction against a frozen bank without committing the results
+    pub fn simulate_single_tx_batch(
+        &self,
+        transaction: &impl TransactionWithMeta,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        enable_cpi_recording: bool,
+        disable_logging: bool,
+    ) -> TransactionSimulationResult {
+        assert!(self.is_frozen(), "simulation bank must be frozen");
+
+        self.simulate_batch_unchecked(transaction, batch, enable_cpi_recording, disable_logging)
+    }
+
+    pub fn simulate_batch_unchecked(
+        &self,
+        transaction: &impl TransactionWithMeta,
+        batch: &TransactionBatch<impl TransactionWithMeta>,
+        enable_cpi_recording: bool,
+        disable_logging: bool,
+    ) -> TransactionSimulationResult {
         let account_keys = transaction.account_keys();
         let number_of_accounts = account_keys.len();
         let account_overrides = self.get_account_overrides_for_simulation(&account_keys);
-        let batch = self.prepare_unlocked_batch_from_single_tx(transaction);
         let mut timings = ExecuteTimings::default();
 
         let LoadAndExecuteTransactionsOutput {
             mut processing_results,
+            balance_collector,
             ..
         } = self.load_and_execute_transactions(
-            &batch,
+            batch,
             // After simulation, transactions will need to be forwarded to the leader
             // for processing. During forwarding, the transaction could expire if the
             // delay is not accounted for.
@@ -3319,9 +3345,9 @@ impl Bank {
                 limit_to_load_programs: true,
                 recording_config: ExecutionRecordingConfig {
                     enable_cpi_recording,
-                    enable_log_recording: true,
+                    enable_log_recording: !disable_logging,
                     enable_return_data_recording: true,
-                    enable_transaction_balance_recording: false,
+                    enable_transaction_balance_recording: true,
                 },
             },
         );
@@ -3339,10 +3365,12 @@ impl Bank {
             inner_instructions,
             units_consumed,
             loaded_accounts_data_size,
+            fee_details,
         ) = match processing_result {
             Ok(processed_tx) => match processed_tx {
                 ProcessedTransaction::Executed(executed_tx) => {
                     let details = executed_tx.execution_details;
+                    let fee_details = executed_tx.loaded_transaction.fee_details;
                     let post_simulation_accounts = executed_tx
                         .loaded_transaction
                         .accounts
@@ -3357,6 +3385,7 @@ impl Bank {
                         details.inner_instructions,
                         details.executed_units,
                         executed_tx.loaded_transaction.loaded_accounts_data_size,
+                        Some(fee_details),
                     )
                 }
                 ProcessedTransaction::FeesOnly(fees_only_tx) => (
@@ -3367,9 +3396,10 @@ impl Bank {
                     None,
                     0,
                     fees_only_tx.rollback_accounts.data_size() as u32,
+                    Some(fees_only_tx.fee_details),
                 ),
             },
-            Err(error) => (vec![], Err(error), None, None, None, 0, 0),
+            Err(error) => (vec![], Err(error), None, None, None, 0, 0, None),
         };
         let logs = logs.unwrap_or_default();
 
@@ -3381,6 +3411,8 @@ impl Bank {
             loaded_accounts_data_size,
             return_data,
             inner_instructions,
+            fee: fee_details.map(|fee_details| fee_details.total_fee()),
+            balance_collector,
         }
     }
 
