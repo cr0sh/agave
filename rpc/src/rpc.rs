@@ -3956,6 +3956,8 @@ pub mod rpc_full {
                 accounts: config_accounts,
                 min_context_slot,
                 inner_instructions: enable_cpi_recording,
+                disable_logging,
+                disable_return_data_recording,
             } = config.unwrap_or_default();
             let tx_encoding = encoding.unwrap_or(UiTransactionEncoding::Base58);
             let binary_encoding = tx_encoding.into_binary_encoding().ok_or_else(|| {
@@ -4009,7 +4011,13 @@ pub mod rpc_full {
                 post_balances,
                 pre_token_balances,
                 post_token_balances,
-            } = bank.simulate_transaction(&transaction, enable_cpi_recording);
+            } = bank.simulate_transaction_with_options(
+                &transaction,
+                enable_cpi_recording,
+                !disable_logging,
+                !disable_return_data_recording,
+                true,
+            );
 
             let account_keys = transaction.message().account_keys();
             let number_of_accounts = account_keys.len();

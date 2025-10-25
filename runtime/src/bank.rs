@@ -3082,12 +3082,47 @@ impl Bank {
         self.simulate_transaction_unchecked(transaction, enable_cpi_recording)
     }
 
-    /// Run transactions against a bank without committing the results; does not check if the bank
-    /// is frozen, enabling use in single-Bank test frameworks
     pub fn simulate_transaction_unchecked(
         &self,
         transaction: &impl TransactionWithMeta,
         enable_cpi_recording: bool,
+    ) -> TransactionSimulationResult {
+        self.simulate_transaction_unchecked_with_options(
+            transaction,
+            enable_cpi_recording,
+            true,
+            true,
+            true,
+        )
+    }
+
+    pub fn simulate_transaction_with_options(
+        &self,
+        transaction: &impl TransactionWithMeta,
+        enable_cpi_recording: bool,
+        enable_log_recording: bool,
+        enable_return_data_recording: bool,
+        enable_transaction_balance_recording: bool,
+    ) -> TransactionSimulationResult {
+        assert!(self.is_frozen(), "simulation bank must be frozen");
+        self.simulate_transaction_unchecked_with_options(
+            transaction,
+            enable_cpi_recording,
+            enable_log_recording,
+            enable_return_data_recording,
+            enable_transaction_balance_recording,
+        )
+    }
+
+    /// Run transactions against a bank without committing the results; does not check if the bank
+    /// is frozen, enabling use in single-Bank test frameworks
+    pub fn simulate_transaction_unchecked_with_options(
+        &self,
+        transaction: &impl TransactionWithMeta,
+        enable_cpi_recording: bool,
+        enable_log_recording: bool,
+        enable_return_data_recording: bool,
+        enable_transaction_balance_recording: bool,
     ) -> TransactionSimulationResult {
         let account_keys = transaction.account_keys();
         let number_of_accounts = account_keys.len();
@@ -3114,9 +3149,9 @@ impl Bank {
                 limit_to_load_programs: true,
                 recording_config: ExecutionRecordingConfig {
                     enable_cpi_recording,
-                    enable_log_recording: true,
-                    enable_return_data_recording: true,
-                    enable_transaction_balance_recording: true,
+                    enable_log_recording,
+                    enable_return_data_recording,
+                    enable_transaction_balance_recording,
                 },
             },
         );
